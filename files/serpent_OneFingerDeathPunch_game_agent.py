@@ -1,11 +1,16 @@
 import offshoot
 import pyautogui
-import re
+# import re
+import time
+import numpy as np
 
+from serpent.sprite import Sprite
 from serpent.game_agent import GameAgent
-from serpent.input_controller import MouseButton
 from serpent.sprite_locator import SpriteLocator
+from serpent.input_controller import MouseButton
 from serpent.machine_learning.context_classification.context_classifiers.cnn_inception_v3_context_classifier import CNNInceptionV3ContextClassifier
+
+plugin_path = offshoot.config["file_paths"]["plugins"]
 
 
 class SerpentOneFingerDeathPunchGameAgent(GameAgent):
@@ -19,10 +24,9 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
 
         self.analytics_client = None
 
-        self.allPunches = []
+        self.sprite_locator = SpriteLocator()
 
     def setup_play(self):
-        plugin_path = offshoot.config["file_paths"]["plugins"]
 
         context_classifier_path = f"{plugin_path}/SerpentOneFingerDeathPunchGameAgentPlugin/files/ml_models/context_classifier.model"
 
@@ -38,6 +42,9 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
 
         print(context)
 
+        # You will see a lot of pyautogui.mouseX(). The click_screen_region
+        # doesn't work on Windows for now so this is my temporary fix.
+
         if context is None:
             print("There's nothing there... Waiting...")
             return
@@ -47,6 +54,7 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
             pyautogui.click(button="left", x=640, y=460)
             pyautogui.mouseDown()
             pyautogui.mouseUp()
+            time.sleep(5)
 
         if context == "main_menu":
             print("Boring part 2, just click on \"Play\"... again")
@@ -56,8 +64,10 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
             )
             pyautogui.mouseDown()
             pyautogui.mouseUp()
+            time.sleep(0.5)
             pyautogui.mouseDown()
             pyautogui.mouseUp()
+            time.sleep(1)
 
         if context == "mode_menu":
             print("What to choose ? Oh ! Survival !")
@@ -67,6 +77,7 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
             )
             pyautogui.mouseDown()
             pyautogui.mouseUp()
+            time.sleep(1)
 
         if context == "survival_menu":
             print("I need to start a game :D")
@@ -75,9 +86,9 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
                 button=MouseButton.LEFT,
                 screen_region="SURVIVAL_MENU_BUTTON_TOP"
             )
-            # Temporary fix for click
             pyautogui.mouseDown()
             pyautogui.mouseUp()
+            time.sleep(1)
 
         if context == "survival_pre_game":
             print("I don't need skills. Let's play !")
@@ -88,68 +99,62 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
             )
             pyautogui.mouseDown()
             pyautogui.mouseUp()
+            time.sleep(1)
 
         if context == "game":
-            # print("\033c")
+            print("\033c")
             print()
             print("I'M PLAYING !")
+            # TODO: add data about life points, nb of killed enemies, etc..
 
-            sprite_leftone = self.game.sprites["SPRITE_LEFT-1"]
-            sprite_lefttwo = self.game.sprites["SPRITE_LEFT-2"]
-            sprite_rightone = self.game.sprites["SPRITE_RIGHT-1"]
-            sprite_righttwo = self.game.sprites["SPRITE_RIGHT-2"]
+            # Cropping game_frame into 2 zones (the click ones)
+            frame_right = game_frame.frame[350:414, 672:744]
+            frame_left = game_frame.frame[350:414, 536:608]
 
-            sprites_left = [sprite_leftone, sprite_lefttwo]
-            sprites_right = [sprite_rightone, sprite_righttwo]
+            # These are only for checking the sprite name we found
+            sprite_leftpunch = self.game.sprites["SPRITE_LEFT-PUNCH"]
+            sprite_rightpunch = self.game.sprites["SPRITE_RIGHT-PUNCH"]
 
-            sprite_locator = SpriteLocator()
+            for frame_to_check in [frame_left, frame_right]:
+                sprite_frame = Sprite(
+                    "QUERY",
+                    image_data=frame_to_check[..., np.newaxis]
+                )
+                # I've done some test and the CONSTELLATION_OF_PIXELS is far
+                # more better FOR MY CASE ONLY !
+                sprite_name = self.sprite_identifier.identify(
+                    sprite_frame, mode="CONSTELLATION_OF_PIXELS"
+                )
 
-            print()
-            try:
-                for sprites_list in [sprites_left, sprites_right]:
-                    for sprite_to_check in sprites_list:
-                        print("Checking for:", sprite_to_check.name)
-                        check_sprite = sprite_locator.locate(
-                            sprite=sprite_to_check,
-                            game_frame=game_frame
-                        )
+                # DEBUG
+                print(sprite_name)
 
-                        if check_sprite:
-                            print("Got the sprite on screen !")
-                            print("Checking side...")
-                            if sprite_to_check in sprites_left:
-                                btnClick = "left"
-                            else:
-                                btnClick = "right"
+                if sprite_name != "UNKNOWN":
+                    if sprite_name == sprite_leftpunch.name:
+                        key = "left"
+                    elif sprite_name == sprite_rightpunch.name:
+                        key = "right"
 
-                            print("Sprite on", btnClick, "side.")
-                            match_two = re.search("TWO", sprite_to_check.name)
-                            print("Checking if 1 or 2 (for now)...")
-                            if match_two:
-                                nbClick = 2
-                            else:
-                                nbClick = 1
-
-                            print(nbClick, "hit(s) to do")
-
-                            for i in range(0, nbClick):
-                                print("Hit", i + 1)
-                                pyautogui.mouseDown(button=btnClick)
-                                pyautogui.mouseUp(button=btnClick)
-            except TypeError as error:
-                print("CheckError:", error)
+                    # We can use the left & right mouse buttons too.
+                    self.input_controller.tap_key(key)
 
         if context == "game_paused":
             print("I'M PAUSING !")
+            time.sleep(1)
 
         if context == "game_end_score":
+            # TODO: check score + nb of enemies killed.
+
             print("I'M... dead.")
+            print("Waiting for button...")
+            time.sleep(3)
             self.input_controller.click_screen_region(
                 button=MouseButton.LEFT,
                 screen_region="GAME_OVER_SCORE_BUTTON"
             )
             pyautogui.mouseDown()
             pyautogui.mouseUp()
+            time.sleep(1)
 
         if context == "game_end_highscore":
             print("I'M... dead. And i have an highscore")
