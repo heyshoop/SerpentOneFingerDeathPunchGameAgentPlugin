@@ -2,15 +2,24 @@ import os
 import time
 import offshoot
 import pyautogui
+import collections
+import numpy as np
 
+from skimage.color import rgb2gray
+
+import serpent.utilities
 from serpent.game_agent import GameAgent
 from serpent.sprite_locator import SpriteLocator
 from serpent.input_controller import MouseButton, KeyboardKey
 from serpent.machine_learning.reinforcement_learning.ddqn import DDQN
-from serpent.machine_learning.reinforcement_learning.keyboard_mouse_action_space import KeyboardMouseActionSpace
 from serpent.machine_learning.context_classification.context_classifiers.cnn_inception_v3_context_classifier import CNNInceptionV3ContextClassifier
 
 plugin_path = offshoot.config["file_paths"]["plugins"]
+
+# Constants used for zoom level
+ZOOM_MAIN = "main"
+ZOOM_BRAWLER = "brawler"
+ZOOM_KILL_MOVE = "kill_move"
 
 
 class SerpentOneFingerDeathPunchGameAgent(GameAgent):
@@ -31,32 +40,12 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
         self.username_entered = False
 
     def setup_play(self):
+        self.reset_game_state()
         self.setup_play_bot()
 
-        input_mapping = {
-            "LEFT": [MouseButton.LEFT, KeyboardKey.KEY_LEFT],
-            "RIGHT": [MouseButton.RIGHT, KeyboardKey.KEY_RIGHT]
-        }
-
-        direction_action_space = KeyboardMouseActionSpace(
-            default_keys=[None, "LEFT", "RIGHT"]
-        )
-
-        direction_model_file_path = "datasets/ofdp_direction_dqn_0_1_.hp5".replace("/", os.sep)
-        self.dqn_direction = DDQN(
-            model_file_path=direction_model_file_path if os.path.isfile(direction_model_file_path) else None,
-            input_shape=(100, 100, 4),
-            input_mapping=input_mapping,
-            action_space=direction_action_space,
-            replay_memory_size=5000,
-            max_steps=1000000,
-            observe_steps=1000,
-            batch_size=32,
-            model_learning_rate=1e-4,
-            initial_epsilon=1,
-            final_epsilon=0.01,
-            override_epsilon=False
-        )
+        # self.my_ddqn = DDQN(
+        #     input_shape=
+        # )
 
     def setup_play_bot(self):
         context_classifier_path = f"{plugin_path}/SerpentOneFingerDeathPunchGameAgentPlugin/files/ml_models/context_classifier.model"
@@ -65,33 +54,28 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
         context_classifier.load_classifier(context_classifier_path)
         self.machine_learning_models["context_classifier"] = context_classifier
 
-        self.last_seen_health = 10
+    def reset_game_state(self):
+        self.game_state = {
+            "health": collections.deque(np.full((8,), 10), maxlen=8),
+            "nb_ennemies_hit": 0,
+            "zoom_level": ZOOM_MAIN,
+            "bonus_mode": False,
+            "bonus_hits": 4,
+            "nb_miss": 0,
+            "miss_failsafe": 2
+        }
 
     def handle_play(self, game_frame):
-        context = self.machine_learning_models["context_classifier"].predict(game_frame.frame)
+        # TODO: find a way to check enemies without the left&right click sprite
+        serpent.utilities.clear_terminal()
+        print("DATA WILL BE HERE...")
 
-        print(context)
-
-        if context is None:
-            print("There's nothing there... Waiting...")
-            return
-
-        self.do_splash_screen_action(context)
-        self.do_main_menu_actions(context)
-        self.do_mode_menu_action(context)
-        self.do_survival_menu_action(context)
-        self.do_survival_pre_game_action(context)
-        self.do_game_paused_action(context)
-        self.do_game_end_highscore(context)
-        self.do_game_end_score_action(context)
-
-        if context == "ofdp_game":
-            print("\033c")
-            print("DATA WILL BE HERE...")
-
-            self.display_health(game_frame)
-
-            #TODO: find a way to check enemies without the left&right click sprite
+        # This order is important
+        self.update_zoom_level(game_frame)
+        self.update_health_counter(game_frame)
+        # These can be in any order
+        self.update_miss_counter(game_frame)
+        self.update_bonus_mode_and_hits(game_frame)
 
     def handle_play_bot(self, game_frame):
         context = self.machine_learning_models["context_classifier"].predict(game_frame.frame)
@@ -106,55 +90,78 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
         self.do_survival_menu_action(context)
         self.do_survival_pre_game_action(context)
         self.do_game_paused_action(context)
-        self.do_game_end_highscore(context)
+        self.do_game_end_highscore_action(context)
         self.do_game_end_score_action(context)
 
         if context == "ofdp_game":
-            print("\033c")
-            print()
+            serpent.utilities.clear_terminal()
             print("I'M PLAYING !")
             # TODO: add data about life points, nb of killed enemies, etc..
 
-            self.display_health(game_frame)
+            # This order is important
+            self.update_zoom_level(game_frame)
+            self.update_health_counter(game_frame)
+            # These can be in any order
+            self.update_miss_counter(game_frame)
+            self.update_bonus_mode_and_hits(game_frame)
 
-            frame_left = {
-                "image_data": game_frame.frame[350:358, 600:608],
+            # TODO: find a new way to get enemies
+            pixel_left = {
+                "image_data": game_frame.frame[350:351, 600:601],
                 "key": KeyboardKey.KEY_LEFT,
                 "msbtn": MouseButton.LEFT
             }
-            frame_right = {
-                "image_data": game_frame.frame[350:358, 672:680],
+            pixel_right = {
+                "image_data": game_frame.frame[350:351, 672:673],
                 "key": KeyboardKey.KEY_RIGHT,
                 "msbtn": MouseButton.RIGHT
             }
 
-            action = "Nothing"
+            for pixel_to_check in [pixel_left, pixel_right]:
+                pixel = pixel_to_check["image_data"][0, 0]
+                if sum(pixel) == 72:
+                    # self.input_controller.tap_key(key=pixel_to_check["key"])
+                    self.input_controller.click(button=pixel_to_check["msbtn"])
 
-            for frame_to_check in [frame_left, frame_right]:
-                check_one = frame_to_check["image_data"][1, 1][0] < 100
-                check_two = frame_to_check["image_data"][1, 1][1] > 135
-                check_three = frame_to_check["image_data"][1, 1][2] > 150
-
-                if check_one and check_two and check_three:
-                    action = frame_to_check["msbtn"]
-                    # print(self.input_controller.tap_key(frame_to_check["key"]))
-                    self.input_controller.click(button=frame_to_check["msbtn"])
-                    break
-
-            print("Actions:", action)
+            self.display_game_data()
             print("")
 
-    def display_health(self, game_frame):
-        if self.check_zoomed_to_level_one(game_frame):
+    def display_game_data(self):
+        print(
+            "Health:",
+            self.game_state["health"][0],
+            "| LAST HIT!!!" if self.game_state["health"][0] == 1 else "",
+            "| Ded" if self.game_state["health"][0] == 0 else ""
+        )
+        print("NB miss:", self.game_state["nb_miss"])
+        print("Zoom level:", self.game_state["zoom_level"])
+        if self.game_state["bonus_mode"]:
+            print(
+                "BONUS ROUND - Bonus round end in",
+                self.game_state["bonus_hits"],
+                "hits"
+            )
+
+    def update_health_counter(self, game_frame):
+        zoom_level = self.game_state["zoom_level"]
+
+        if zoom_level == ZOOM_MAIN:
             first_x = 553
             first_y = 554
             last_health_x = 569
             last_health_y = 570
-        else:
+        elif zoom_level == ZOOM_BRAWLER:
             first_x = 606
             first_y = 607
             last_health_x = 622
             last_health_y = 623
+        elif zoom_level == ZOOM_KILL_MOVE:
+            # Can't get any new modification on health here
+            # return
+            first_x = 553
+            first_y = 554
+            last_health_x = 569
+            last_health_y = 570
 
         current_health = 0
 
@@ -164,30 +171,43 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
                 current_health += 1
 
         health_last = game_frame.frame[last_health_x:last_health_y, 475:476]
-        #"REGION": (569, 475, 570, 476)
+        # "REGION": (569, 475, 570, 476)
 
         if health_last[0, 0, 0] > 200:
             current_health += 1
 
-        if -1 <= self.last_seen_health - current_health <= 1:
-            self.last_seen_health = current_health
+        if -1 <= self.game_state["health"][0] - current_health <= 1:
+            self.game_state["health"].appendleft(current_health)
 
-        print(
-            "Health:",
-            self.last_seen_health,
-            "LAST HIT!!!" if self.last_seen_health == 1 else ""
-        )
+    def update_miss_counter(self, game_frame):
+        miss_region = rgb2gray(game_frame.frame[357:411, 570:710])
+        self.game_state["miss_failsafe"] -= 1
+        # print(sum(sum(miss_region)))
+        if 3400 < sum(sum(miss_region)) < 3500 and self.game_state["miss_failsafe"] < 0 and self.game_state["zoom_level"] is ZOOM_MAIN:
+            self.game_state["nb_miss"] += 1
+            self.game_state["miss_failsafe"] = 2
 
+    def update_bonus_mode_and_hits(self, game_frame):
+        for nb_hits in range(0, 4):
+            region_hit = game_frame.frame[618:619, 714 - (50 * nb_hits):715 - (50 * nb_hits)]
+            if sum(region_hit[0, 0]) == 306:
+                self.game_state["bonus_hits"] += 1
 
-    # "Zoomed level one" is the brawler mode.
-    # "Zoomed level two" is the killmove zoom.
-    def check_zoomed_to_level_one(self, game_frame):
-        #"REGION": (579, 961, 580, 962)
-        # THIS IS ONLY THE FIRST ZOOM. THE SECOND ONE NEED TO BE TESTED
-        check_zoomed_mode = game_frame.frame[579:580, 961:962]
-        if sum(check_zoomed_mode[0, 0]) < 150:
-            return True
-        return False
+        if self.game_state["bonus_hits"] > 0:
+            self.game_state["bonus_mode"] = True
+        self.game_state["bonus_mode"] = False
+
+    # Check the zoom on game screen. "main" is the normal game, "brawler" when
+    # a brawler is fighting, "kill_move" when the character does a kill move
+    def update_zoom_level(self, game_frame):
+        check_zoom_mode = game_frame.frame[563:564, 639:640]
+        sum_pixels = sum(check_zoom_mode[0, 0])
+        if sum_pixels > 300:
+            self.game_state["zoom_level"] = ZOOM_MAIN
+        elif sum_pixels == 300:
+            self.game_state["zoom_level"] = ZOOM_BRAWLER
+        elif sum_pixels < 300:
+            self.game_state["zoom_level"] = ZOOM_KILL_MOVE
 
     def do_splash_screen_action(self, context):
         if context == "ofdp_splash_screen":
@@ -233,11 +253,13 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
         if context == "ofdp_survival_pre_game":
             print("I don't need skills. Let's play !")
 
+            self.reset_game_state()
             self.input_controller.click_screen_region(
                 button=MouseButton.LEFT,
                 screen_region="SURVIVAL_PRE_GAME_START_BUTTON"
             )
             time.sleep(1)
+
 
     def do_game_paused_action(self, context):
         # TODO: add click for quitting or resume.
@@ -245,7 +267,7 @@ class SerpentOneFingerDeathPunchGameAgent(GameAgent):
             print("I'M PAUSING !")
             time.sleep(1)
 
-    def do_game_end_highscore(self, context):
+    def do_game_end_highscore_action(self, context):
         if context == "ofdp_game_end_highscore":
             print("I'M... dead. And i have an highscore")
 
